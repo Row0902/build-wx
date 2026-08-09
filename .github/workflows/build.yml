@@ -1,0 +1,242 @@
+name: Build and Release wxPython Wheels (Multi-OS)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  # 1. VERIFICAR VERSIÓN Y EXTRAER NOVEDADES REALES DE PYPI
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      wxpython_version: ${{ steps.wxpython.outputs.version }}
+      release_notes: ${{ steps.wxpython.outputs.release_notes }}
+      should_build: ${{ steps.check_release.outputs.should_build }}
+    steps:
+      - name: Detectar última versión y extraer notas de PyPI
+        id: wxpython
+        run: |
+          python3 - << 'EOF'
+          import json, re, urllib.request, os
+
+          url = "https://pypi.org/pypi/wxPython/json"
+          req = urllib.request.urlopen(url)
+          data = json.loads(req.read().decode('utf-8'))
+
+          # Obtener última versión estable
+          stable = [v for v in data['releases'].keys() if re.fullmatch(r'\d+(?:\.\d+)*', v)]
+          stable.sort(key=lambda s: tuple(map(int, s.split('.'))))
+          latest_version = stable[-1] if stable else ''
+
+          # Extraer descripción / novedades del paquete
+          raw_desc = data.get('info', {}).get('description', 'Sin notas disponibles.')
+
+          # Recortar o formatear si la descripción es muy larga
+          release_notes = raw_desc[:3000] if len(raw_desc) > 3000 else raw_desc
+
+          # Guardar en outputs de GitHub Actions usando delimitador EOF
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+              f.write(f"version={latest_version}\n")
+              f.write("release_notes<<EOF_NOTES\n")
+              f.write(release_notes)
+              f.write("\nEOF_NOTES\n")
+          EOF
+
+      - name: Comprobar si ya existe el Release en GitHub
+        id: check_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.wxpython.outputs.version }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Ejecución manual detectada. Forzando compilación."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          elif gh release view "wxPython-v$VERSION" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "El Release wxPython-v$VERSION ya existe en GitHub. Cancelando matriz."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nueva versión detectada (v$VERSION). Iniciando compilación..."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # 2. MATRIZ DE COMPILACIÓN PARALELA
+  build-wheel:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: "windows"
+            system: "windows"
+            version: "latest"
+            runner: "windows-latest"
+            container: ""
+            pkg_mgr: "none"
+          - name: "fedora"
+            system: "fedora"
+            version: "latest"
+            runner: "ubuntu-latest"
+            container: "fedora:latest"
+            pkg_mgr: "dnf"
+          - name: "ubuntu"
+            system: "ubuntu"
+            version: "latest"
+            runner: "ubuntu-latest"
+            container: ""
+            pkg_mgr: "apt"
+          - name: "debian"
+            system: "debian"
+            version: "latest"
+            runner: "ubuntu-latest"
+            container: "debian:latest"
+            pkg_mgr: "apt"
+          - name: "arch"
+            system: "arch"
+            version: "latest"
+            runner: "ubuntu-latest"
+            container: "archlinux:latest"
+            pkg_mgr: "pacman"
+        python-version: ["3.12", "3.13", "3.14"]
+
+    runs-on: ${{ matrix.target.runner }}
+    container: ${{ matrix.target.container != '' && matrix.target.container || null }}
+
+    env:
+      TARGET_SYSTEM: ${{ matrix.target.system }}
+      TARGET_VERSION: ${{ matrix.target.version }}
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      # --- DEPENDENCIAS DEL SISTEMA ---
+      - name: Instalar dependencias en Fedora
+        if: matrix.target.pkg_mgr == 'dnf'
+        run: |
+          dnf update -y
+          dnf install -y \
+            gcc-c++ git which python3-devel gtk3-devel webkit2gtk4.1-devel \
+            gstreamer1-devel gstreamer1-plugins-base-devel glut-devel \
+            libjpeg-turbo-devel libpng-devel libtiff-devel SDL2-devel \
+            libnotify-devel libSM-devel libsecret-devel libXtst-devel curl
+
+      - name: Instalar dependencias en Debian / Ubuntu
+        if: matrix.target.pkg_mgr == 'apt'
+        run: |
+          ${{ matrix.target.runner == 'ubuntu-latest' && matrix.target.container == '' && 'sudo ' || '' }}apt-get update
+          ${{ matrix.target.runner == 'ubuntu-latest' && matrix.target.container == '' && 'sudo ' || '' }}DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential curl git pkg-config python3 libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            freeglut3-dev libjpeg-dev libpng-dev libtiff-dev libsdl2-dev \
+            libnotify-dev libsm-dev libsecret-1-dev libxtst-dev
+
+      - name: Instalar dependencias en Arch Linux
+        if: matrix.target.pkg_mgr == 'pacman'
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm \
+            base-devel curl git pkgconf ca-certificates python gtk3 \
+            webkit2gtk-4.1 gstreamer gst-plugins-base freeglut libjpeg-turbo \
+            libpng libtiff sdl2 libnotify libsm libsecret libxtst uv
+
+      # --- CONFIGURACIÓN DE UV + CACHÉ ---
+      - name: Instalar uv y habilitar caché (Windows / Ubuntu Host)
+        if: matrix.target.container == '' && matrix.target.pkg_mgr != 'pacman'
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-python: true
+          cache-suffix: "py${{ matrix.python-version }}-${{ matrix.target.name }}"
+
+      - name: Instalar uv en Contenedores Linux
+        if: matrix.target.container != '' && matrix.target.pkg_mgr != 'pacman'
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Cachear directorio de uv en Contenedores Linux
+        if: matrix.target.container != '' || matrix.target.pkg_mgr == 'pacman'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-cache-${{ matrix.target.name }}-py${{ matrix.python-version }}-${{ needs.check-version.outputs.wxpython_version }}
+          restore-keys: |
+            uv-cache-${{ matrix.target.name }}-py${{ matrix.python-version }}-
+
+      # --- COMPILACIÓN DEL WHEEL ---
+      - name: Instalar Python con uv e iniciar venv
+        shell: bash
+        run: |
+          uv python install ${{ matrix.python-version }}
+          uv venv --python ${{ matrix.python-version }}
+
+      - name: Compilar Wheel de wxPython con uv
+        shell: bash
+        run: |
+          mkdir -p dist
+          PYTHON_BIN="${{ runner.os == 'Windows' && '.venv/Scripts/python.exe' || '.venv/bin/python' }}"
+          uv pip wheel wxPython==${{ needs.check-version.outputs.wxpython_version }} \
+            --python "$PYTHON_BIN" \
+            --wheel-dir dist \
+            -v
+
+      - name: Identificar Wheel por Distribución (Linux)
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            for f in dist/*.whl; do
+              if [ -f "$f" ]; then
+                mv "$f" "$(echo "$f" | sed "s/-linux_x86_64.whl/-${{ matrix.target.name }}_x86_64.whl/")"
+              fi
+            done
+          fi
+
+      - name: Subir Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target.name }}-py${{ matrix.python-version }}
+          path: dist/*.whl
+          retention-days: 1
+
+  # 3. PUBLICAR RELEASE UNIFICADO CON LAS NOTAS OFICIALES
+  publish-release:
+    needs: [check-version, build-wheel]
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-wheels
+          pattern: wheel-*
+          merge-multiple: true
+
+      - name: Publicar Release en GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "wxPython-v${{ needs.check-version.outputs.wxpython_version }}"
+          name: "wxPython v${{ needs.check-version.outputs.wxpython_version }} Pre-built Wheels"
+          body: |
+            ## Wheels Precompilados para wxPython v${{ needs.check-version.outputs.wxpython_version }}
+
+            Plataformas soportadas: **Windows, Fedora, Ubuntu, Debian, Arch Linux**.
+            Versiones de Python: **3.12, 3.13, 3.14**.
+
+            ### Instalación rápida con `uv` / `pip`:
+            ```bash
+            uv pip install <URL-DEL-WHEEL-CORRESPONDIENTE>
+            ```
+
+            ---
+
+            ### 📝 Novedades Oficiales de wxPython v${{ needs.check-version.outputs.wxpython_version }} (PyPI):
+
+            ${{ needs.check-version.outputs.release_notes }}
+          files: release-wheels/*.whl
+          generate_release_notes: false
+          overwrite_files: true
