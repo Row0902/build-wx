@@ -187,7 +187,9 @@ jobs:
           if [ "${{ runner.os }}" != "Windows" ]; then
             for f in dist/*.whl; do
               if [ -f "$f" ]; then
-                mv "$f" "$(echo "$f" | sed "s/-linux_x86_64.whl/-${{ matrix.target.name }}_x86_64.whl/")"
+                # Rename using local version identifier: wxpython-4.3.1+fedora-cp314-cp314-linux_x86_64.whl
+                # This keeps linux_x86_64 platform tag (PEP 425 compliant) while adding distro info
+                mv "$f" "$(echo "$f" | sed "s/\(wxpython-[0-9.]*\)-cp/\1+${{ matrix.target.name }}-cp/")"
               fi
             done
           fi
