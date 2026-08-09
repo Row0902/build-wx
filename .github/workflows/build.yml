@@ -170,7 +170,7 @@ jobs:
         shell: bash
         run: |
           uv python install ${{ matrix.python-version }}
-          uv venv --python ${{ matrix.python-version }}
+          uv venv --python ${{ matrix.python-version }} --seed
 
       - name: Compilar Wheel de wxPython con pip
         shell: bash
