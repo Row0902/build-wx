@@ -172,13 +172,12 @@ jobs:
           uv python install ${{ matrix.python-version }}
           uv venv --python ${{ matrix.python-version }}
 
-      - name: Compilar Wheel de wxPython con uv
+      - name: Compilar Wheel de wxPython con pip
         shell: bash
         run: |
           mkdir -p dist
           PYTHON_BIN="${{ runner.os == 'Windows' && '.venv/Scripts/python.exe' || '.venv/bin/python' }}"
-          uv pip wheel wxPython==${{ needs.check-version.outputs.wxpython_version }} \
-            --python "$PYTHON_BIN" \
+          "$PYTHON_BIN" -m pip wheel wxPython==${{ needs.check-version.outputs.wxpython_version }} \
             --wheel-dir dist \
             -v
 
