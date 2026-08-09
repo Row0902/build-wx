@@ -35,10 +35,10 @@ jobs:
           # Extraer descripción / novedades del paquete
           raw_desc = data.get('info', {}).get('description', 'Sin notas disponibles.')
 
-          # Recortar o formatear si la descripción es muy larga
+          # Recortar si la descripción es muy larga
           release_notes = raw_desc[:3000] if len(raw_desc) > 3000 else raw_desc
 
-          # Guardar en outputs de GitHub Actions usando delimitador EOF
+          # Guardar en outputs
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
               f.write(f"version={latest_version}\n")
               f.write("release_notes<<EOF_NOTES\n")
@@ -144,14 +144,10 @@ jobs:
             webkit2gtk-4.1 gstreamer gst-plugins-base freeglut libjpeg-turbo \
             libpng libtiff sdl2 libnotify libsm libsecret libxtst uv
 
-      # --- CONFIGURACIÓN DE UV + CACHÉ ---
-      - name: Instalar uv y habilitar caché (Windows / Ubuntu Host)
+      # --- CONFIGURACIÓN DE UV Y CACHÉ UNIVERSAL ---
+      - name: Instalar uv (Windows / Ubuntu Host)
         if: matrix.target.container == '' && matrix.target.pkg_mgr != 'pacman'
         uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          cache-python: true
-          cache-suffix: "py${{ matrix.python-version }}-${{ matrix.target.name }}"
 
       - name: Instalar uv en Contenedores Linux
         if: matrix.target.container != '' && matrix.target.pkg_mgr != 'pacman'
@@ -159,11 +155,12 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Cachear directorio de uv en Contenedores Linux
-        if: matrix.target.container != '' || matrix.target.pkg_mgr == 'pacman'
+      - name: Cachear directorio de uv
         uses: actions/cache@v4
         with:
-          path: ~/.cache/uv
+          path: |
+            ~/.cache/uv
+            ~\AppData\Local\uv\cache
           key: uv-cache-${{ matrix.target.name }}-py${{ matrix.python-version }}-${{ needs.check-version.outputs.wxpython_version }}
           restore-keys: |
             uv-cache-${{ matrix.target.name }}-py${{ matrix.python-version }}-
