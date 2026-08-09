@@ -2,9 +2,8 @@ name: Build wxPython Wheel for Ubuntu
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["main"]
-    tags: ["v*"]
+  schedule:
+    - cron: '20 6 * * *'
 
 permissions:
   contents: write
@@ -24,6 +23,13 @@ jobs:
     steps:
       - name: Checkout del repositorio
         uses: actions/checkout@v4
+
+      - name: Detectar última versión estable de wxPython
+        id: wxpython
+        run: |
+          version="$(python3 -c "import json,re,urllib.request; data=json.load(urllib.request.urlopen('https://pypi.org/pypi/wxPython/json')); stable=[v for v in data['releases'].keys() if re.fullmatch(r'\\d+(?:\\.\\d+)*', v)]; stable.sort(key=lambda s: tuple(map(int,s.split('.')))); print(stable[-1] if stable else '')")"
+          [ -n "$version" ]
+          echo "wxpython_version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Instalar dependencias del sistema en Ubuntu
         run: |
@@ -59,25 +65,26 @@ jobs:
       - name: Descargar y compilar wheel de wxPython
         run: |
           mkdir -p dist
-          uv run --python .venv/bin/python python -m pip wheel wxPython --wheel-dir dist -v
+          uv run --python .venv/bin/python python -m pip wheel wxPython==${{ steps.wxpython.outputs.wxpython_version }} --wheel-dir dist -v
 
       - name: Renombrar wheel para release
         run: |
           wheel_file="$(ls dist/*.whl | head -n 1)"
           [ -n "$wheel_file" ]
-          cp "$wheel_file" "dist/wxPython_${GITHUB_REF_NAME}.${TARGET_SYSTEM}-${TARGET_VERSION}-python${{ matrix.python-version }}.whl"
+          cp "$wheel_file" "dist/wxPython_v${{ steps.wxpython.outputs.wxpython_version }}.${TARGET_SYSTEM}-${TARGET_VERSION}-python${{ matrix.python-version }}.whl"
 
       - name: Subir wheel como artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wxpython-${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}
+          name: wxpython-${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}-v${{ steps.wxpython.outputs.wxpython_version }}
           path: dist/*.whl
           retention-days: 30
 
       - name: Publicar Release en GitHub
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          name: wxPython_${{ github.ref_name }}.${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}
-          files: dist/wxPython_${{ github.ref_name }}.${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}.whl
+          tag_name: wxPython-v${{ steps.wxpython.outputs.wxpython_version }}
+          name: wxPython_v${{ steps.wxpython.outputs.wxpython_version }}.${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}
+          files: dist/wxPython_v${{ steps.wxpython.outputs.wxpython_version }}.${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}.whl
           generate_release_notes: true
+          overwrite_files: true

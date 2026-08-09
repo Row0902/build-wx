@@ -2,9 +2,8 @@ name: Build wxPython Wheel for Windows
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["main"]
-    tags: ["v*"]
+  schedule:
+    - cron: '0 6 * * *'
 
 permissions:
   contents: write
@@ -25,6 +24,14 @@ jobs:
       - name: Checkout del repositorio
         uses: actions/checkout@v4
 
+      - name: Detectar última versión estable de wxPython
+        id: wxpython
+        shell: pwsh
+        run: |
+          $version = python -c "import json,re,urllib.request; data=json.load(urllib.request.urlopen('https://pypi.org/pypi/wxPython/json')); stable=[v for v in data['releases'].keys() if re.fullmatch(r'\d+(?:\.\d+)*', v)]; stable.sort(key=lambda s: tuple(map(int,s.split('.')))); print(stable[-1] if stable else '')"
+          if (-not $version) { throw "No se pudo detectar una versión estable de wxPython" }
+          "wxpython_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Instalar uv (Astral)
         uses: astral-sh/setup-uv@v4
 
@@ -40,27 +47,28 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          uv run --python .venv/Scripts/python.exe python -m pip wheel wxPython --wheel-dir dist -v
+          uv run --python .venv/Scripts/python.exe python -m pip wheel wxPython==${{ steps.wxpython.outputs.wxpython_version }} --wheel-dir dist -v
 
       - name: Renombrar wheel para release
         shell: pwsh
         run: |
           $wheel = Get-ChildItem -Path dist -Filter *.whl | Select-Object -First 1
           if (-not $wheel) { throw "No se generó ningún wheel" }
-          $releaseName = "wxPython_${{ github.ref_name }}.${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}.whl"
+          $releaseName = "wxPython_v${{ steps.wxpython.outputs.wxpython_version }}.${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}.whl"
           Copy-Item $wheel.FullName (Join-Path dist $releaseName)
 
       - name: Subir wheel como artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wxpython-${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}
+          name: wxpython-${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}-v${{ steps.wxpython.outputs.wxpython_version }}
           path: dist/*.whl
           retention-days: 30
 
       - name: Publicar Release en GitHub
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          name: wxPython_${{ github.ref_name }}.${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}
-          files: dist/wxPython_${{ github.ref_name }}.${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}.whl
+          tag_name: wxPython-v${{ steps.wxpython.outputs.wxpython_version }}
+          name: wxPython_v${{ steps.wxpython.outputs.wxpython_version }}.${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}
+          files: dist/wxPython_v${{ steps.wxpython.outputs.wxpython_version }}.${{ env.TARGET_SYSTEM }}-${{ env.TARGET_VERSION }}-python${{ matrix.python-version }}.whl
           generate_release_notes: true
+          overwrite_files: true
